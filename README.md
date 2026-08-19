@@ -36,4 +36,4 @@ Sistema inteligente y autónomo diseñado para automatizar la gestión, distribu
 * **`index.js` & `ejecutar_pipeline.bat`**: Interfaz de línea de comandos (CLI) interactiva para que un operador ejecute rutinas manualmente de forma fácil y rápida con solo presionar números.
 
 ---
-*© 2026 Gabriel Loayza - Soluciones de Automatización Avanzada para Call Centers.*
+*© 2026 Gabriel Loayza - Soluciones de Marketing y Sistemas.*
