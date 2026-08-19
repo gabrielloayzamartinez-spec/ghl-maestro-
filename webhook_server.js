@@ -1,5 +1,5 @@
 import express from 'express';
-import { processSingleContactFromWebhook } from './distribute_contacts.js';
+import { processSingleContactFromWebhook, processContactPipeline } from './distribute_contacts.js';
 import { GHL_CONFIG, PAGE_TAG_MAP, PALACIOS_USERS } from './config.js';
 
 const app = express();
@@ -53,7 +53,8 @@ async function runFullSync() {
   console.log(`[${runId}] Starting automated synchronization cycle...`);
 
   try {
-    const url = `https://services.leadconnectorhq.com/contacts/?locationId=${locationId}&limit=100`;
+    // Fetch latest updated contacts
+    const url = `https://services.leadconnectorhq.com/contacts/?locationId=${locationId}&limit=100&sort=updatedAt&sortDirection=desc`;
     const res = await fetch(url, { headers: HEADERS_CONTACTS });
     const data = await res.json();
     const contacts = data.contacts || [];
@@ -151,6 +152,21 @@ async function runFullSync() {
         stats.piuraAssigned = (stats.piuraAssigned || 0) + 1;
         console.log(`  [Assignment Action] Assigned to Piura: ${c.firstName || ''}`);
       }
+
+      // -- 2. Lógica Automática de Pipeline Maestro --
+      const result = await processContactPipeline(c, 'Auto Sync');
+      if (result && result.success) {
+        if (result.action === 'created_calificado') {
+          stats.opportunitiesCreated++;
+          stats.oppsCalificado++;
+        } else if (result.action === 'created_precalificado') {
+          stats.opportunitiesCreated++;
+          stats.oppsPrecalificado++;
+        } else if (result.action === 'moved_to_calificado') {
+          stats.oppsCalificado++;
+          // Si lo movemos, lo contamos en las estadísticas para saber que hubo actividad
+        }
+      }
     }
 
     lastSyncTime = new Date().toISOString();
@@ -165,6 +181,70 @@ async function runFullSync() {
 
 // Execute every 2 minutes (120,000 ms) 24/7
 setInterval(runFullSync, 120000);
+
+// ==========================================
+// BACKGROUND HISTORICAL SWEEP (MICROMOTOR)
+// ==========================================
+let isDeepSweepRunning = false;
+let sweepNextPageUrl = `https://services.leadconnectorhq.com/contacts/?locationId=${locationId}&limit=100`;
+let sweepCount = 0;
+
+async function runDeepSweep() {
+  if (isDeepSweepRunning) return;
+  isDeepSweepRunning = true;
+
+  console.log(`\n[Micromotor] Iniciando barrido histórico de 100 contactos...`);
+
+  try {
+    if (!sweepNextPageUrl) {
+      sweepNextPageUrl = `https://services.leadconnectorhq.com/contacts/?locationId=${locationId}&limit=100`;
+      console.log(`[Micromotor] Reiniciando ciclo de peinado desde el principio.`);
+    }
+
+    const res = await fetch(sweepNextPageUrl, { headers: HEADERS_CONTACTS });
+    if (res.status === 429) {
+      console.log(`[Micromotor] Rate limit alcanzado. Pausando hasta el siguiente ciclo.`);
+      return;
+    }
+    const data = await res.json();
+    const contacts = data.contacts || [];
+
+    let sweepProcessed = 0;
+    for (const c of contacts) {
+      sweepProcessed++;
+      const result = await processContactPipeline(c, 'Micromotor Sweep');
+      if (result && result.success) {
+        if (result.action === 'created_calificado') {
+          stats.opportunitiesCreated++;
+          stats.oppsCalificado++;
+        } else if (result.action === 'created_precalificado') {
+          stats.opportunitiesCreated++;
+          stats.oppsPrecalificado++;
+        } else if (result.action === 'moved_to_calificado') {
+          stats.oppsCalificado++;
+        }
+      }
+    }
+    
+    sweepCount += sweepProcessed;
+    sweepNextPageUrl = data.meta?.nextPageUrl || null;
+    
+    console.log(`[Micromotor] Barrido completado. Procesados en esta página: ${sweepProcessed}. Total acumulado del ciclo: ${sweepCount}.`);
+    if (!sweepNextPageUrl) {
+        console.log(`[Micromotor] ¡Ciclo de peinado de toda la base de datos COMPLETADO! Volverá a empezar en la siguiente iteración.\n`);
+        sweepCount = 0;
+    }
+  } catch (e) {
+    console.error("[Micromotor Error] Fallo en el barrido:", e.message);
+  } finally {
+    isDeepSweepRunning = false;
+  }
+}
+
+// Ejecutar el micromotor cada 5 minutos (300,000 ms)
+setInterval(runDeepSweep, 300000);
+// Iniciar la primera página a los 30 segundos de encender el servidor
+setTimeout(runDeepSweep, 30000);
 
 // ==========================================
 // HTTP ENDPOINTS (API & Webhooks)

@@ -1,4 +1,4 @@
-import { GHL_CONFIG } from './config.js';
+import { GHL_CONFIG, PAGE_TAG_MAP } from './config.js';
 
 const { apiKey, locationId } = GHL_CONFIG;
 
@@ -54,14 +54,14 @@ export async function runDistributeContacts() {
       const hasPhone = Boolean(c.phone && c.phone.trim().length > 0);
       const tags = (c.tags || []).map(t => t.toLowerCase());
       
-      // Detectar etiqueta de página para el título
+      // Detectar etiqueta de página para el título basado en config.js
       let pageLabel = 'General';
-      if (tags.includes('naturales bionatural')) pageLabel = 'BioNatural';
-      else if (tags.includes('bionatural ultra')) pageLabel = 'Ultra';
-      else if (tags.includes('naturales bio corp')) pageLabel = 'Bio Corp';
-      else if (tags.includes('bio natural')) pageLabel = 'Bio Natural';
-      else if (tags.includes('bio naturales')) pageLabel = 'Bio Naturales';
-      else if (tags.includes('laboratorios naturales bio')) pageLabel = 'Laboratorios';
+      for (const [pageName, pageTag] of Object.entries(PAGE_TAG_MAP)) {
+        if (tags.includes(pageTag)) {
+          pageLabel = pageName;
+          break;
+        }
+      }
 
       allContacts.push({
         id: c.id,
@@ -86,41 +86,17 @@ export async function runDistributeContacts() {
   for (let i = 0; i < allContacts.length; i += CONCURRENCY) {
     const batch = allContacts.slice(i, i + CONCURRENCY);
     await Promise.all(batch.map(async (c) => {
-      try {
-        const stageId = c.hasPhone ? STAGE_CALIFICADO_ID : STAGE_PRECALIFICADO_ID;
-        const oppName = `${c.name} [${c.pageLabel}]`;
-
-        const payload = {
-          pipelineId: PIPELINE_ID,
-          locationId: locationId,
-          name: oppName,
-          pipelineStageId: stageId,
-          status: 'open',
-          contactId: c.id
-        };
-
-        if (c.assignedTo) {
-          payload.assignedTo = c.assignedTo;
-        }
-
-        const oppUrl = `https://services.leadconnectorhq.com/opportunities/`;
-        const res = await fetchWithRetry(oppUrl, {
-          method: 'POST',
-          headers: HEADERS,
-          body: JSON.stringify(payload)
-        });
-
-        if (res.ok) {
-          successTotal++;
-          if (c.hasPhone) calificados++;
-          else precalificados++;
-        }
-      } catch (e) {}
+      const res = await processContactPipeline(c, 'Batch Distribution');
+      if (res && res.success) {
+        if (res.action === 'created_calificado') { successTotal++; calificados++; }
+        else if (res.action === 'created_precalificado') { successTotal++; precalificados++; }
+        // We can track moved as well if we add variables for them, but for batch creating we just count newly created
+      }
     }));
 
     const progress = Math.min(i + CONCURRENCY, allContacts.length);
     if (progress % 100 === 0 || progress === allContacts.length) {
-      console.log(`[PROGRESO] ${progress}/${allContacts.length} procesados | Calificados: ${calificados} | Precalificados: ${precalificados}...`);
+      console.log(`[PROGRESO] ${progress}/${allContacts.length} procesados | Nuevos Calificados: ${calificados} | Nuevos Precalificados: ${precalificados}...`);
     }
     await sleep(100);
   }
@@ -137,54 +113,90 @@ if (process.argv[1].endsWith('distribute_contacts.js')) {
   runDistributeContacts();
 }
 
-export async function processSingleContactFromWebhook(c) {
+export async function processContactPipeline(c, context = 'Background') {
   try {
     const hasPhone = Boolean(c.phone && c.phone.trim().length > 0);
     const tags = (c.tags || []).map(t => typeof t === 'string' ? t.toLowerCase() : '');
-    
+    // Detectar etiqueta de página para el título basado en config.js
     let pageLabel = 'General';
-    if (tags.includes('naturales bionatural')) pageLabel = 'BioNatural';
-    else if (tags.includes('bionatural ultra')) pageLabel = 'Ultra';
-    else if (tags.includes('naturales bio corp')) pageLabel = 'Bio Corp';
-    else if (tags.includes('bio natural')) pageLabel = 'Bio Natural';
-    else if (tags.includes('bio naturales')) pageLabel = 'Bio Naturales';
-    else if (tags.includes('laboratorios naturales bio')) pageLabel = 'Laboratorios';
+    for (const [pageName, pageTag] of Object.entries(PAGE_TAG_MAP)) {
+      if (tags.includes(pageTag)) {
+        pageLabel = pageName;
+        break;
+      }
+    }
 
     const stageId = hasPhone ? STAGE_CALIFICADO_ID : STAGE_PRECALIFICADO_ID;
     const name = `${c.first_name || c.firstName || ''} ${c.last_name || c.lastName || ''}`.trim() || 'Sin Nombre';
     const oppName = `${name} [${pageLabel}]`;
 
-    const payload = {
-      pipelineId: PIPELINE_ID,
-      locationId: locationId,
-      name: oppName,
-      pipelineStageId: stageId,
-      status: 'open',
-      contactId: c.id
-    };
+    // 1. Check if opportunity already exists for this contact in the CRM
+    const searchUrl = `https://services.leadconnectorhq.com/opportunities/search?location_id=${locationId}&contact_id=${c.id}`;
+    const searchRes = await fetchWithRetry(searchUrl, { headers: HEADERS });
+    const searchData = await searchRes.json();
+    const existingOpps = searchData.opportunities || [];
+    
+    const masterOpp = existingOpps.find(o => o.pipelineId === PIPELINE_ID);
 
-    if (c.assignedTo) {
-      payload.assignedTo = c.assignedTo;
-    }
-
-    console.log(`[Webhook Event] Processing contact: ${name} -> Has Phone?: ${hasPhone ? 'YES' : 'NO'}`);
-
-    const oppUrl = `https://services.leadconnectorhq.com/opportunities/`;
-    const res = await fetchWithRetry(oppUrl, {
-      method: 'POST',
-      headers: HEADERS,
-      body: JSON.stringify(payload)
-    });
-
-    if (res.ok) {
-      console.log(`[Webhook Success] Opportunity created successfully in stage: ${hasPhone ? 'Calificado' : 'Precalificado'}`);
-      return { success: true, stage: hasPhone ? 'calificado' : 'precalificado' };
+    if (masterOpp) {
+      // 2. Already exists. Should we move it?
+      if (masterOpp.pipelineStageId === STAGE_PRECALIFICADO_ID && hasPhone) {
+        console.log(`[${context}] Actualizando oportunidad: ${name} -> Moviendo a Calificado (Añadió teléfono)`);
+        const updateUrl = `https://services.leadconnectorhq.com/opportunities/${masterOpp.id}`;
+        const updateRes = await fetchWithRetry(updateUrl, {
+          method: 'PUT',
+          headers: HEADERS,
+          body: JSON.stringify({ pipelineStageId: STAGE_CALIFICADO_ID, name: oppName })
+        });
+        if (updateRes.ok) return { action: 'moved_to_calificado', success: true };
+      } else {
+        // En etapa correcta o más avanzada
+        return { action: 'ignored_existing', success: true };
+      }
     } else {
-      console.error(`[Webhook Error] Failed creating opportunity: ${res.statusText}`);
-      return false;
+      // 3. Create new opportunity
+      console.log(`[${context}] Creando oportunidad nueva para: ${name} -> ${hasPhone ? 'Calificado' : 'Precalificado'}`);
+      const payload = {
+        pipelineId: PIPELINE_ID,
+        locationId: locationId,
+        name: oppName,
+        pipelineStageId: stageId,
+        status: 'open',
+        contactId: c.id
+      };
+
+      if (c.assignedTo) {
+        payload.assignedTo = c.assignedTo;
+      }
+
+      const oppUrl = `https://services.leadconnectorhq.com/opportunities/`;
+      const createRes = await fetchWithRetry(oppUrl, {
+        method: 'POST',
+        headers: HEADERS,
+        body: JSON.stringify(payload)
+      });
+
+      if (createRes.ok) {
+        return { action: hasPhone ? 'created_calificado' : 'created_precalificado', success: true };
+      } else {
+        console.error(`[${context} Error] Fallo al crear oportunidad para ${name}: ${createRes.statusText}`);
+      }
     }
+    return { action: 'error', success: false };
   } catch (err) {
-    console.error(`[Webhook Exception] Error processing contact: ${err.message}`);
-    return false;
+    console.error(`[${context} Exception] Error procesando contacto: ${err.message}`);
+    return { action: 'error', success: false };
   }
+}
+
+export async function processSingleContactFromWebhook(c) {
+  const result = await processContactPipeline(c, 'Webhook Event');
+  if (result && result.success) {
+    if (result.action === 'created_calificado' || result.action === 'moved_to_calificado') {
+      return { success: true, stage: 'calificado' };
+    } else if (result.action === 'created_precalificado') {
+      return { success: true, stage: 'precalificado' };
+    }
+  }
+  return false;
 }
