@@ -53,120 +53,17 @@ async function runFullSync() {
   console.log(`[${runId}] Starting automated synchronization cycle...`);
 
   try {
-    // Fetch latest updated contacts
-    const url = `https://services.leadconnectorhq.com/contacts/?locationId=${locationId}&limit=100&sort=updatedAt&sortDirection=desc`;
+    const url = `https://services.leadconnectorhq.com/contacts/?locationId=${locationId}&limit=100`;
     const res = await fetch(url, { headers: HEADERS_CONTACTS });
+    if (res.status === 429) {
+      console.log(`[${runId}] Rate limit hit. Pausing...`);
+      return;
+    }
     const data = await res.json();
     const contacts = data.contacts || [];
 
     for (const c of contacts) {
-      const currentTags = (c.tags || []).map(t => typeof t === 'string' ? t.toLowerCase() : '');
-      
-      let hasPage = false;
-      let detectedPage = null;
-      for (const [pageName, tag] of Object.entries(PAGE_TAG_MAP)) {
-        if (currentTags.includes(tag)) {
-          hasPage = true;
-          detectedPage = pageName;
-          break;
-        }
-      }
-
-      if (!hasPage) {
-        try {
-          const convUrl = `https://services.leadconnectorhq.com/conversations/search?locationId=${locationId}&contactId=${c.id}`;
-          const convRes = await fetch(convUrl, { headers: HEADERS_CONV });
-          const convData = await convRes.json();
-
-          if (convData.conversations && convData.conversations.length > 0) {
-            const msgUrl = `https://services.leadconnectorhq.com/conversations/${convData.conversations[0].id}/messages?locationId=${locationId}`;
-            const msgRes = await fetch(msgUrl, { headers: HEADERS_CONV });
-            const msgData = await msgRes.json();
-            const messages = msgData.messages?.messages || [];
-
-            for (const m of messages) {
-              if (m.meta?.fb?.pageName && PAGE_TAG_MAP[m.meta.fb.pageName]) {
-                detectedPage = m.meta.fb.pageName;
-                const pageTag = PAGE_TAG_MAP[detectedPage];
-                
-                await fetch(`https://services.leadconnectorhq.com/contacts/${c.id}/tags`, {
-                  method: 'POST',
-                  headers: HEADERS_CONTACTS,
-                  body: JSON.stringify({ tags: [pageTag, 'meta-ads', 'facebook-messenger'] })
-                });
-                stats.tagsInjected++;
-                console.log(`  [Tagging Action] Contact: ${c.firstName || ''} ${c.lastName || ''} -> Assigned Tag: ${pageTag}`);
-                break;
-              }
-            }
-          }
-        } catch (err) {}
-      }
-
-      if (detectedPage === 'Naturales BioNatural' && c.assignedTo !== PALACIOS_USERS['naturales bionatural'].id) {
-        await fetch(`https://services.leadconnectorhq.com/contacts/${c.id}`, {
-          method: 'PUT',
-          headers: HEADERS_CONTACTS,
-          body: JSON.stringify({ assignedTo: PALACIOS_USERS['naturales bionatural'].id })
-        });
-        stats.palaciosAssigned++;
-        console.log(`  [Assignment Action] Assigned to Palacios: ${c.firstName || ''}`);
-      } else if (detectedPage === 'BioNatural - Ultra' && c.assignedTo !== PALACIOS_USERS['bionatural ultra'].id) {
-        await fetch(`https://services.leadconnectorhq.com/contacts/${c.id}`, {
-          method: 'PUT',
-          headers: HEADERS_CONTACTS,
-          body: JSON.stringify({ assignedTo: PALACIOS_USERS['bionatural ultra'].id })
-        });
-        stats.palaciosAssigned++;
-        console.log(`  [Assignment Action] Assigned to Palacios Ultra: ${c.firstName || ''}`);
-      } else if (detectedPage === 'Naturales Bio Corp' && c.assignedTo !== PALACIOS_USERS['redes benavides 1'].id) {
-        await fetch(`https://services.leadconnectorhq.com/contacts/${c.id}`, {
-          method: 'PUT',
-          headers: HEADERS_CONTACTS,
-          body: JSON.stringify({ assignedTo: PALACIOS_USERS['redes benavides 1'].id })
-        });
-        stats.benavidesAssigned++;
-        console.log(`  [Assignment Action] Assigned to Benavides 1: ${c.firstName || ''}`);
-      } else if ((detectedPage === 'Bio Natural' || detectedPage === 'BioNatural Fuerza') && c.assignedTo !== PALACIOS_USERS['redes benavides 2'].id) {
-        await fetch(`https://services.leadconnectorhq.com/contacts/${c.id}`, {
-          method: 'PUT',
-          headers: HEADERS_CONTACTS,
-          body: JSON.stringify({ assignedTo: PALACIOS_USERS['redes benavides 2'].id })
-        });
-        stats.benavidesAssigned++;
-        console.log(`  [Assignment Action] Assigned to Benavides 2: ${c.firstName || ''}`);
-      } else if ((detectedPage === 'Bio Naturales' || detectedPage === 'BioNatural Plus' || detectedPage === 'Bio Naturales Plus') && c.assignedTo !== PALACIOS_USERS['redes roosevelt'].id) {
-        await fetch(`https://services.leadconnectorhq.com/contacts/${c.id}`, {
-          method: 'PUT',
-          headers: HEADERS_CONTACTS,
-          body: JSON.stringify({ assignedTo: PALACIOS_USERS['redes roosevelt'].id })
-        });
-        stats.rooseveltAssigned = (stats.rooseveltAssigned || 0) + 1;
-        console.log(`  [Assignment Action] Assigned to Roosevelt: ${c.firstName || ''}`);
-      } else if ((detectedPage === 'BioNatural' || detectedPage === 'Natural Bio') && c.assignedTo !== PALACIOS_USERS['redes piura'].id) {
-        await fetch(`https://services.leadconnectorhq.com/contacts/${c.id}`, {
-          method: 'PUT',
-          headers: HEADERS_CONTACTS,
-          body: JSON.stringify({ assignedTo: PALACIOS_USERS['redes piura'].id })
-        });
-        stats.piuraAssigned = (stats.piuraAssigned || 0) + 1;
-        console.log(`  [Assignment Action] Assigned to Piura: ${c.firstName || ''}`);
-      }
-
-      // -- 2. Lógica Automática de Pipeline Maestro --
-      const result = await processContactPipeline(c, 'Auto Sync');
-      if (result && result.success) {
-        if (result.action === 'created_calificado') {
-          stats.opportunitiesCreated++;
-          stats.oppsCalificado++;
-        } else if (result.action === 'created_precalificado') {
-          stats.opportunitiesCreated++;
-          stats.oppsPrecalificado++;
-        } else if (result.action === 'moved_to_calificado') {
-          stats.oppsCalificado++;
-          // Si lo movemos, lo contamos en las estadísticas para saber que hubo actividad
-        }
-      }
+      await auditContact(c, 'Auto Sync');
     }
 
     lastSyncTime = new Date().toISOString();
@@ -176,6 +73,120 @@ async function runFullSync() {
     console.error("[Error] Synchronization failure:", e.message);
   } finally {
     isSyncRunning = false;
+  }
+}
+
+// ==========================================
+// UNIVERSAL CONTACT AUDITOR (The Single Brain)
+// ==========================================
+async function auditContact(c, context) {
+  let currentTags = (c.tags || []).map(t => typeof t === 'string' ? t.toLowerCase() : '');
+  
+  let hasPage = false;
+  let detectedPage = null;
+  for (const [pageName, tag] of Object.entries(PAGE_TAG_MAP)) {
+    if (currentTags.includes(tag)) {
+      hasPage = true;
+      detectedPage = pageName;
+      break;
+    }
+  }
+
+  // 1. Tagging Audit
+  if (!hasPage) {
+    try {
+      const convUrl = `https://services.leadconnectorhq.com/conversations/search?locationId=${locationId}&contactId=${c.id}`;
+      const convRes = await fetch(convUrl, { headers: HEADERS_CONV });
+      const convData = await convRes.json();
+
+      if (convData.conversations && convData.conversations.length > 0) {
+        const msgUrl = `https://services.leadconnectorhq.com/conversations/${convData.conversations[0].id}/messages?locationId=${locationId}`;
+        const msgRes = await fetch(msgUrl, { headers: HEADERS_CONV });
+        const msgData = await msgRes.json();
+        const messages = msgData.messages?.messages || [];
+
+        for (const m of messages) {
+          if (m.meta?.fb?.pageName && PAGE_TAG_MAP[m.meta.fb.pageName]) {
+            detectedPage = m.meta.fb.pageName;
+            const pageTag = PAGE_TAG_MAP[detectedPage];
+            
+            await fetch(`https://services.leadconnectorhq.com/contacts/${c.id}/tags`, {
+              method: 'POST',
+              headers: HEADERS_CONTACTS,
+              body: JSON.stringify({ tags: [pageTag, 'meta-ads', 'facebook-messenger'] })
+            });
+            stats.tagsInjected++;
+            console.log(`  [Tagging Action] Contact: ${c.firstName || ''} ${c.lastName || ''} -> Assigned Tag: ${pageTag}`);
+            // Update local state to proceed with assignment
+            currentTags.push(pageTag);
+            hasPage = true;
+            break;
+          }
+        }
+      }
+    } catch (err) {
+      console.error(`  [Tagging Error] ${err.message}`);
+    }
+  }
+
+  // 2. Assignment Audit
+  let wasAssigned = false;
+  if (detectedPage === 'Naturales BioNatural' && c.assignedTo !== PALACIOS_USERS['naturales bionatural'].id) {
+    c.assignedTo = PALACIOS_USERS['naturales bionatural'].id;
+    wasAssigned = true;
+    stats.palaciosAssigned++;
+    console.log(`  [Assignment Action] Assigned to Palacios: ${c.firstName || ''}`);
+  } else if (detectedPage === 'BioNatural - Ultra' && c.assignedTo !== PALACIOS_USERS['bionatural ultra'].id) {
+    c.assignedTo = PALACIOS_USERS['bionatural ultra'].id;
+    wasAssigned = true;
+    stats.palaciosAssigned++;
+    console.log(`  [Assignment Action] Assigned to Palacios Ultra: ${c.firstName || ''}`);
+  } else if (detectedPage === 'Naturales Bio Corp' && c.assignedTo !== PALACIOS_USERS['redes benavides 1'].id) {
+    c.assignedTo = PALACIOS_USERS['redes benavides 1'].id;
+    wasAssigned = true;
+    stats.benavidesAssigned++;
+    console.log(`  [Assignment Action] Assigned to Benavides 1: ${c.firstName || ''}`);
+  } else if ((detectedPage === 'Bio Natural' || detectedPage === 'BioNatural Fuerza') && c.assignedTo !== PALACIOS_USERS['redes benavides 2'].id) {
+    c.assignedTo = PALACIOS_USERS['redes benavides 2'].id;
+    wasAssigned = true;
+    stats.benavidesAssigned++;
+    console.log(`  [Assignment Action] Assigned to Benavides 2: ${c.firstName || ''}`);
+  } else if ((detectedPage === 'Bio Naturales' || detectedPage === 'BioNatural Plus' || detectedPage === 'Bio Naturales Plus') && c.assignedTo !== PALACIOS_USERS['redes roosevelt'].id) {
+    c.assignedTo = PALACIOS_USERS['redes roosevelt'].id;
+    wasAssigned = true;
+    stats.rooseveltAssigned = (stats.rooseveltAssigned || 0) + 1;
+    console.log(`  [Assignment Action] Assigned to Roosevelt: ${c.firstName || ''}`);
+  } else if ((detectedPage === 'BioNatural' || detectedPage === 'Natural Bio' || detectedPage === 'BIO Naturales Laboratorio') && c.assignedTo !== PALACIOS_USERS['redes piura'].id) {
+    c.assignedTo = PALACIOS_USERS['redes piura'].id;
+    wasAssigned = true;
+    stats.piuraAssigned = (stats.piuraAssigned || 0) + 1;
+    console.log(`  [Assignment Action] Assigned to Piura: ${c.firstName || ''}`);
+  }
+
+  if (wasAssigned) {
+    try {
+      await fetch(`https://services.leadconnectorhq.com/contacts/${c.id}`, {
+        method: 'PUT',
+        headers: HEADERS_CONTACTS,
+        body: JSON.stringify({ assignedTo: c.assignedTo })
+      });
+    } catch (e) {
+      console.error(`  [Assignment Error] ${e.message}`);
+    }
+  }
+
+  // 3. Pipeline Audit (Pipeline Maestro)
+  const result = await processContactPipeline(c, context);
+  if (result && result.success) {
+    if (result.action === 'created_calificado') {
+      stats.opportunitiesCreated++;
+      stats.oppsCalificado++;
+    } else if (result.action === 'created_precalificado') {
+      stats.opportunitiesCreated++;
+      stats.oppsPrecalificado++;
+    } else if (result.action === 'moved_to_calificado') {
+      stats.oppsCalificado++;
+    }
   }
 }
 
@@ -212,18 +223,7 @@ async function runDeepSweep() {
     let sweepProcessed = 0;
     for (const c of contacts) {
       sweepProcessed++;
-      const result = await processContactPipeline(c, 'Micromotor Sweep');
-      if (result && result.success) {
-        if (result.action === 'created_calificado') {
-          stats.opportunitiesCreated++;
-          stats.oppsCalificado++;
-        } else if (result.action === 'created_precalificado') {
-          stats.opportunitiesCreated++;
-          stats.oppsPrecalificado++;
-        } else if (result.action === 'moved_to_calificado') {
-          stats.oppsCalificado++;
-        }
-      }
+      await auditContact(c, 'Micromotor Sweep');
     }
     
     sweepCount += sweepProcessed;
