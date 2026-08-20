@@ -71,11 +71,13 @@ export async function auditAdAttribution(contactId, options = {}) {
         // Metadatos de Facebook / Meta Ads en el mensaje
         const fbMeta = m.meta?.fb || {};
         const isFromAd = Boolean(
-          fbMeta.adId ||
-          fbMeta.adTitle ||
-          fbMeta.pageName ||
-          m.meta?.email?.adId ||
-          (m.source === 'facebook' && m.direction === 'inbound')
+          m.direction === 'inbound' && (
+            fbMeta.adId ||
+            fbMeta.adTitle ||
+            fbMeta.pageName ||
+            m.meta?.email?.adId ||
+            m.source === 'facebook'
+          )
         );
 
         if (isFromAd) {
