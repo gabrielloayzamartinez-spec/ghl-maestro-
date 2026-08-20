@@ -9,6 +9,25 @@ app.use(express.json());
 const PORT = process.env.PORT || 3000;
 const { apiKey, locationId } = GHL_CONFIG;
 
+
+
+async function fetchWithRetry(url, options, attempt = 1) {
+  try {
+    const res = await fetch(url, options);
+    if (res.status === 429) {
+      await sleep(250 * Math.pow(2, attempt));
+      if (attempt < 3) return fetchWithRetry(url, options, attempt + 1);
+    }
+    return res;
+  } catch (e) {
+    if (attempt < 3) {
+      await sleep(500);
+      return fetchWithRetry(url, options, attempt + 1);
+    }
+    throw e;
+  }
+}
+
 const HEADERS_CONTACTS = {
   'Authorization': `Bearer ${apiKey}`,
   'Version': '2021-07-28',
@@ -55,7 +74,7 @@ async function runFullSync() {
 
   try {
     const url = `https://services.leadconnectorhq.com/contacts/?locationId=${locationId}&limit=100`;
-    const res = await fetch(url, { headers: HEADERS_CONTACTS });
+    const res = await fetchWithRetry(url, { headers: HEADERS_CONTACTS });
     if (res.status === 429) {
       console.log(`[${runId}] Rate limit hit. Pausing...`);
       return;
@@ -91,7 +110,7 @@ async function auditContact(c, context) {
   if (fullName && !currentTags.includes('alerta-duplicado-clic')) {
     try {
       const searchUrl = `https://services.leadconnectorhq.com/contacts/?locationId=${locationId}&query=${encodeURIComponent(fullName)}`;
-      const searchRes = await fetch(searchUrl, { headers: HEADERS_CONTACTS });
+      const searchRes = await fetchWithRetry(searchUrl, { headers: HEADERS_CONTACTS });
       
       if (searchRes.status === 200) {
         const searchData = await searchRes.json();
@@ -103,10 +122,10 @@ async function auditContact(c, context) {
 
         if (duplicates.length > 0) {
           // Etiquetar
-          await fetch(`https://services.leadconnectorhq.com/contacts/${c.id}/tags`, {
+          await fetchWithRetry(`https://services.leadconnectorhq.com/contacts/${c.id}/tags`, {
             method: 'POST',
             headers: HEADERS_CONTACTS,
-            body: JSON.stringify({ tags: ['alerta-duplicado-clic'] })
+            body: JSON.stringify({ tags: [...new Set([...currentTags, 'alerta-duplicado-clic'])] })
           });
           currentTags.push('alerta-duplicado-clic');
           console.log(`  [Radar] Contact: ${fullName} es un posible DUPLICADO. Etiquetado.`);
@@ -114,7 +133,7 @@ async function auditContact(c, context) {
           // Inyectar Nota Anti-Refutaciones
           const noteBody = `🚨 ALERTA DE SISTEMA: POSIBLE DUPLICADO / CLIC MÚLTIPLE\nEste lead tiene exactamente el mismo nombre que otro contacto previo.\n\nPara validar si es un Homónimo (Personas distintas):\n1. Pídale su número de teléfono.\n2. Si al guardar el teléfono el CRM advierte que ya existe, es la misma persona haciendo clics múltiples (Descuento de comisión).\n3. Si al guardar el teléfono el CRM lo acepta sin errores, es un HOMÓNIMO real. (Queda autorizado a borrar la etiqueta alerta-duplicado-clic).`;
           
-          await fetch(`https://services.leadconnectorhq.com/contacts/${c.id}/notes`, {
+          await fetchWithRetry(`https://services.leadconnectorhq.com/contacts/${c.id}/notes`, {
             method: 'POST',
             headers: HEADERS_CONTACTS,
             body: JSON.stringify({ body: noteBody })
@@ -140,12 +159,12 @@ async function auditContact(c, context) {
   if (!hasPage) {
     try {
       const convUrl = `https://services.leadconnectorhq.com/conversations/search?locationId=${locationId}&contactId=${c.id}`;
-      const convRes = await fetch(convUrl, { headers: HEADERS_CONV });
+      const convRes = await fetchWithRetry(convUrl, { headers: HEADERS_CONV });
       const convData = await convRes.json();
 
       if (convData.conversations && convData.conversations.length > 0) {
         const msgUrl = `https://services.leadconnectorhq.com/conversations/${convData.conversations[0].id}/messages?locationId=${locationId}`;
-        const msgRes = await fetch(msgUrl, { headers: HEADERS_CONV });
+        const msgRes = await fetchWithRetry(msgUrl, { headers: HEADERS_CONV });
         const msgData = await msgRes.json();
         const messages = msgData.messages?.messages || [];
 
@@ -154,7 +173,7 @@ async function auditContact(c, context) {
             detectedPage = m.meta.fb.pageName;
             const pageTag = PAGE_TAG_MAP[detectedPage];
             
-            await fetch(`https://services.leadconnectorhq.com/contacts/${c.id}/tags`, {
+            await fetchWithRetry(`https://services.leadconnectorhq.com/contacts/${c.id}/tags`, {
               method: 'POST',
               headers: HEADERS_CONTACTS,
               body: JSON.stringify({ tags: [pageTag, 'meta-ads', 'facebook-messenger'] })
@@ -209,7 +228,7 @@ async function auditContact(c, context) {
 
   if (wasAssigned) {
     try {
-      await fetch(`https://services.leadconnectorhq.com/contacts/${c.id}`, {
+      await fetchWithRetry(`https://services.leadconnectorhq.com/contacts/${c.id}`, {
         method: 'PUT',
         headers: HEADERS_CONTACTS,
         body: JSON.stringify({ assignedTo: c.assignedTo })
@@ -261,7 +280,7 @@ async function runDeepSweep() {
       console.log(`[Micromotor] Reiniciando ciclo de peinado desde el principio.`);
     }
 
-    const res = await fetch(sweepNextPageUrl, { headers: HEADERS_CONTACTS });
+    const res = await fetchWithRetry(sweepNextPageUrl, { headers: HEADERS_CONTACTS });
     if (res.status === 429) {
       console.log(`[Micromotor] Rate limit alcanzado. Pausando hasta el siguiente ciclo.`);
       return;

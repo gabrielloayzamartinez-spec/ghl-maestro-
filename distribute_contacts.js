@@ -109,7 +109,7 @@ export async function runDistributeContacts() {
   console.log(`=================================================\n`);
 }
 
-if (process.argv[1].endsWith('distribute_contacts.js')) {
+if (process.argv[1] && process.argv[1].endsWith('distribute_contacts.js')) {
   runDistributeContacts();
 }
 
