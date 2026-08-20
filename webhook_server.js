@@ -1,6 +1,7 @@
 import express from 'express';
 import { processSingleContactFromWebhook, processContactPipeline } from './distribute_contacts.js';
 import { GHL_CONFIG, PAGE_TAG_MAP, PALACIOS_USERS } from './config.js';
+import { auditAdAttribution } from './ad_attribution_engine.js';
 
 const app = express();
 app.use(express.json());
@@ -81,6 +82,49 @@ async function runFullSync() {
 // ==========================================
 async function auditContact(c, context) {
   let currentTags = (c.tags || []).map(t => typeof t === 'string' ? t.toLowerCase() : '');
+
+  // 0. Radar de Duplicados Automático
+  const first = (c.firstName || '').trim();
+  const last = (c.lastName || '').trim();
+  const fullName = `${first} ${last}`.trim();
+  
+  if (fullName && !currentTags.includes('alerta-duplicado-clic')) {
+    try {
+      const searchUrl = `https://services.leadconnectorhq.com/contacts/?locationId=${locationId}&query=${encodeURIComponent(fullName)}`;
+      const searchRes = await fetch(searchUrl, { headers: HEADERS_CONTACTS });
+      
+      if (searchRes.status === 200) {
+        const searchData = await searchRes.json();
+        const duplicates = (searchData.contacts || []).filter(existing => 
+          existing.id !== c.id && 
+          (existing.firstName || '').trim().toLowerCase() === first.toLowerCase() &&
+          (existing.lastName || '').trim().toLowerCase() === last.toLowerCase()
+        );
+
+        if (duplicates.length > 0) {
+          // Etiquetar
+          await fetch(`https://services.leadconnectorhq.com/contacts/${c.id}/tags`, {
+            method: 'POST',
+            headers: HEADERS_CONTACTS,
+            body: JSON.stringify({ tags: ['alerta-duplicado-clic'] })
+          });
+          currentTags.push('alerta-duplicado-clic');
+          console.log(`  [Radar] Contact: ${fullName} es un posible DUPLICADO. Etiquetado.`);
+
+          // Inyectar Nota Anti-Refutaciones
+          const noteBody = `🚨 ALERTA DE SISTEMA: POSIBLE DUPLICADO / CLIC MÚLTIPLE\nEste lead tiene exactamente el mismo nombre que otro contacto previo.\n\nPara validar si es un Homónimo (Personas distintas):\n1. Pídale su número de teléfono.\n2. Si al guardar el teléfono el CRM advierte que ya existe, es la misma persona haciendo clics múltiples (Descuento de comisión).\n3. Si al guardar el teléfono el CRM lo acepta sin errores, es un HOMÓNIMO real. (Queda autorizado a borrar la etiqueta alerta-duplicado-clic).`;
+          
+          await fetch(`https://services.leadconnectorhq.com/contacts/${c.id}/notes`, {
+            method: 'POST',
+            headers: HEADERS_CONTACTS,
+            body: JSON.stringify({ body: noteBody })
+          });
+        }
+      }
+    } catch(e) {
+      console.error(`  [Radar Error] Fallo al buscar duplicados para ${fullName}: ${e.message}`);
+    }
+  }
   
   let hasPage = false;
   let detectedPage = null;
@@ -188,6 +232,11 @@ async function auditContact(c, context) {
       stats.oppsCalificado++;
     }
   }
+
+  // 4. Auditoría de Pauta y Reingresos (Asíncrono en segundo plano)
+  auditAdAttribution(c.id, { silent: true }).catch(err => {
+    console.error(`  [Ad Attribution Error] ${err.message}`);
+  });
 }
 
 // Execute every 2 minutes (120,000 ms) 24/7
@@ -530,6 +579,11 @@ app.post('/webhook/ghl-contact', async (req, res) => {
         stats.oppsPrecalificado++;
       }
     }
+
+    // Auditoría de Pauta y Reingresos en tiempo real (Asíncrono)
+    auditAdAttribution(contactData.id).catch(err => {
+      console.error(`[Webhook Ad Attribution Error] ${err.message}`);
+    });
     
   } catch (error) {
     console.error("[Webhook Error] Failure during request processing:", error.message);

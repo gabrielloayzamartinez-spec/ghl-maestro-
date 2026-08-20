@@ -2,6 +2,7 @@ import readline from 'readline';
 import { getOrCreateMasterPipeline } from './pipeline_manager.js';
 import { runDistributeContacts } from './distribute_contacts.js';
 import { runHistoricalAssignment } from './historical_assignment.js';
+import { auditAdAttribution, runHistoricalAdAttributionSweep } from './ad_attribution_engine.js';
 
 const rl = readline.createInterface({
   input: process.stdin,
@@ -17,9 +18,10 @@ function showMenu() {
   console.log("  3. [Full Run] Verify + Distribute");
   console.log("  4. [Batch Run] Mudanza Histórica de Asignación (Palacios/Benavides)");
   console.log("  5. [Live Server] Start Webhook & Autopilot Engine");
-  console.log("  6. [Exit]");
+  console.log("  6. [Ad Attribution] Peinado Histórico de Pauta & Deducciones");
+  console.log("  7. [Exit]");
   console.log("=================================================");
-  rl.question("Elige una opción (1-6): ", async (ans) => {
+  rl.question("Elige una opción (1-7): ", async (ans) => {
     switch (ans.trim()) {
       case '1':
         await getOrCreateMasterPipeline();
@@ -43,6 +45,10 @@ function showMenu() {
         import('./webhook_server.js');
         break;
       case '6':
+        await runHistoricalAdAttributionSweep();
+        showMenu();
+        break;
+      case '7':
         console.log("👋 Saliendo del Panel de Control.");
         process.exit(0);
       default:

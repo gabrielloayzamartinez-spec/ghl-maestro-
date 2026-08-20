@@ -1,4 +1,4 @@
-# GoHighLevel (GHL) Pipeline Maestro & Autopilot
+# 🎯 GoHighLevel (GHL) Pipeline Maestro & Autopilot
 
 Sistema inteligente y autónomo diseñado para automatizar la gestión, distribución y clasificación de leads en GoHighLevel (GHL).
 
@@ -6,7 +6,7 @@ Sistema inteligente y autónomo diseñado para automatizar la gestión, distribu
 
 ---
 
-##  Características Principales
+## 🌟 Características Principales
 
 * **Micromotor de Peinado Histórico (El "Peinador"):** Un motor en segundo plano que barre continuamente toda la base de datos (página por página) para recuperar contactos antiguos o perdidos y acomodarlos en el flujo comercial.
 * **Sincronizador 24/7 en Tiempo Real:** Un servidor en la nube que lee los contactos modificados más recientemente cada 2 minutos, asegurando que ninguna oportunidad nueva se quede sin ser atendida.
@@ -15,7 +15,7 @@ Sistema inteligente y autónomo diseñado para automatizar la gestión, distribu
 
 ---
 
-##  Lógica Comercial del Pipeline
+## 🏛️ Lógica Comercial del Pipeline
 
 1. **💬 Precalificado (Sin Teléfono / En Chat):**
    * Contactos que entraron por redes pero aún no proporcionan su número de contacto.
@@ -27,13 +27,15 @@ Sistema inteligente y autónomo diseñado para automatizar la gestión, distribu
 
 ---
 
-##  Arquitectura de Archivos
+## 📁 Arquitectura de Archivos
 
 * **`webhook_server.js`**: El cerebro principal. Mantiene el servidor 24/7 vivo, ejecutando el sincronizador en tiempo real y el "Micromotor" histórico de peinado continuo.
+* **`ad_attribution_engine.js`**: Módulo independiente de auditoría de pauta de Meta (Facebook/Instagram). Detecta clics repetidos del mismo lead, contabiliza reingresos, aplica etiquetas de auditoría (`pauta-clic-x1`, `pauta-reingreso-x2`, etc.) e inyecta notas de descuento para las agencias de marketing.
 * **`distribute_contacts.js`**: Contiene el núcleo de la lógica inteligente (`processContactPipeline`) que audita, crea o mueve las oportunidades dentro del tablero de GHL. También permite inyecciones masivas (Batch).
+* **`duplicate_radar.js`**: Radar de duplicados y homónimos para proteger las comisiones del call center.
 * **`config.js`**: El corazón de la configuración. Define las credenciales de GHL, el ID del Pipeline Maestro y la tabla dinámica de emparejamiento entre Sedes, Etiquetas y Vendedores.
 * **`pipeline_manager.js`**: Script de infraestructura. Instala, valida y crea la estructura del Tablero Kanban dentro de la subcuenta de GHL.
 * **`index.js` & `ejecutar_pipeline.bat`**: Interfaz de línea de comandos (CLI) interactiva para que un operador ejecute rutinas manualmente de forma fácil y rápida con solo presionar números.
 
 ---
-*© 2026 Gabriel Loayza - Soluciones de Marketing y Sistemas.*
+*© 2026 Gabriel Loayza - Soluciones de Automatización Avanzada para Call Centers.*

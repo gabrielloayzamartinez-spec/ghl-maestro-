@@ -1,6 +1,6 @@
 export const GHL_CONFIG = {
-  apiKey: 'pit-15480b8d-2f5e-4782-94de-c312e1061314',
-  locationId: 'ATPYNnsfZ1W8sd6WgWIV'
+  apiKey: process.env.GHL_API_KEY || 'pit-4d48784c-23cd-466d-a6b2-4850138e35d0',
+  locationId: process.env.GHL_LOCATION_ID || 'ATPYNnsfZ1W8sd6WgWIV'
 };
 
 export const MASTER_PIPELINE_DEF = {
