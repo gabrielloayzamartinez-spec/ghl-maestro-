@@ -77,64 +77,74 @@ export async function auditAdAttribution(contactId, options = {}) {
     }
 
     // 3. Extraer todos los mensajes de todas las conversaciones para buscar metadatos de pauta (Meta FB/IG)
-    const adInteractions = [];
+    // Lógica del Cliente: "La guía es el mensaje automático que proviene de nosotros. Si se repite se cuenta como uno más."
+    const automatedMessages = {};
 
     for (const conv of conversations) {
-      const msgUrl = `https://services.leadconnectorhq.com/conversations/${conv.id}/messages?locationId=${locationId}`;
-      const msgRes = await fetchWithRetry(msgUrl, { headers: HEADERS_CONV });
-      const msgData = await msgRes.json();
-      const messages = msgData.messages?.messages || [];
+      let nextUrl = `https://services.leadconnectorhq.com/conversations/${conv.id}/messages?locationId=${locationId}&limit=100`;
+      
+      while (nextUrl) {
+        const msgRes = await fetchWithRetry(nextUrl, { headers: HEADERS_CONV });
+        const msgData = await msgRes.json();
+        const messages = msgData.messages?.messages || [];
 
-      for (const m of messages) {
-        // Metadatos de Facebook / Meta Ads en el mensaje
-        const fbMeta = m.meta?.fb || {};
-        const isFromAd = Boolean(
-          m.direction === 'inbound' && (
-            fbMeta.adId ||
-            fbMeta.adTitle ||
-            fbMeta.pageName ||
-            m.meta?.email?.adId ||
-            m.source === 'facebook'
-          )
-        );
+        for (const m of messages) {
+          // Guardar interacciones de entrada para contexto
+          const fbMeta = m.meta?.fb || {};
+          const isFromAd = Boolean(
+            m.direction === 'inbound' && (fbMeta.adId || fbMeta.adTitle || fbMeta.pageName || m.meta?.email?.adId || m.source === 'facebook')
+          );
 
-        if (isFromAd) {
-          const interactionDate = m.dateAdded ? new Date(m.dateAdded) : new Date();
-          adInteractions.push({
-            messageId: m.id,
-            date: interactionDate,
-            pageName: fbMeta.pageName || 'Página Meta',
-            adId: fbMeta.adId || 'N/A',
-            adTitle: fbMeta.adTitle || 'Anuncio Directo Messenger',
-            body: (m.body || '').substring(0, 80)
-          });
+          if (isFromAd) {
+            const interactionDate = m.dateAdded ? new Date(m.dateAdded) : new Date();
+            adInteractions.push({
+              messageId: m.id,
+              date: interactionDate,
+              pageName: fbMeta.pageName || 'Página Meta',
+              body: (m.body || '').substring(0, 80)
+            });
+          }
+
+          // Rastrear repeticiones de mensajes automáticos (Outbound enviados por el sistema)
+          if (m.direction === 'outbound' && m.body) {
+            if (m.source === 'app' || m.source === 'workflow' || !['web', 'ios', 'android'].includes(m.source)) {
+              // Normalizar el texto (quitar el nombre del lead y tomar los primeros 80 caracteres)
+              let normalizedBody = m.body.trim();
+              if (contact.firstName) {
+                normalizedBody = normalizedBody.replace(new RegExp(contact.firstName, 'gi'), '{Name}');
+              }
+              const templateKey = normalizedBody.substring(0, 80);
+              
+              // Evitar contar mensajes súper cortos genéricos
+              if (templateKey.length > 15) {
+                if (!automatedMessages[templateKey]) {
+                  automatedMessages[templateKey] = 0;
+                }
+                automatedMessages[templateKey]++;
+              }
+            }
+          }
         }
+        nextUrl = msgData.meta?.nextPageUrl || null;
       }
     }
 
-    // Ordenar cronológicamente (del más antiguo al más reciente)
     adInteractions.sort((a, b) => a.date - b.date);
 
-    // Agrupar interacciones en ventanas de 10 minutos (para ignorar el spam de clics rápidos, pero detectar reingresos reales)
-    const uniqueAdClicks = [];
-    for (const inter of adInteractions) {
-      if (uniqueAdClicks.length === 0) {
-        uniqueAdClicks.push(inter);
-      } else {
-        const lastClick = uniqueAdClicks[uniqueAdClicks.length - 1];
-        const diffMinutes = (inter.date - lastClick.date) / (1000 * 60);
-        if (diffMinutes > 10) { // Si pasaron más de 10 minutos, cuenta como un reingreso nuevo de pauta
-          uniqueAdClicks.push(inter);
-        }
+    // Calcular el número de veces que se repitió el mensaje automático más frecuente
+    let maxAutomatedRepetitions = 0;
+    for (const count of Object.values(automatedMessages)) {
+      if (count > maxAutomatedRepetitions) {
+        maxAutomatedRepetitions = count;
       }
     }
 
-    // Contabilizar clics únicos basados en las sesiones agrupadas
-    const totalAdClicks = Math.max(uniqueAdClicks.length, 1);
+    // El número de clics es el número de veces que se disparó el mensaje automático (mínimo 1)
+    const totalAdClicks = Math.max(maxAutomatedRepetitions, 1);
     const isMultipleClick = totalAdClicks > 1;
     const clicksToDiscount = Math.max(0, totalAdClicks - 1);
 
-    const latestInteraction = uniqueAdClicks[uniqueAdClicks.length - 1] || {
+    const latestInteraction = adInteractions[adInteractions.length - 1] || {
       pageName: 'Desconocida',
       adTitle: 'Campaña Estándar',
       date: new Date()
