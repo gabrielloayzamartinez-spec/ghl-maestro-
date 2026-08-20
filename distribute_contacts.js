@@ -21,13 +21,14 @@ async function fetchWithRetry(url, options, attempt = 1) {
   try {
     const res = await fetch(url, options);
     if (res.status === 429) {
-      await sleep(250 * Math.pow(2, attempt));
-      if (attempt < 3) return fetchWithRetry(url, options, attempt + 1);
+      // GoHighLevel limits are 100 req / 10s. We need to sleep longer if we hit it.
+      await sleep(2000 * attempt);
+      if (attempt < 5) return fetchWithRetry(url, options, attempt + 1);
     }
     return res;
   } catch (e) {
-    if (attempt < 3) {
-      await sleep(500);
+    if (attempt < 5) {
+      await sleep(2000);
       return fetchWithRetry(url, options, attempt + 1);
     }
     throw e;

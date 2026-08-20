@@ -20,6 +20,24 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+async function fetchWithRetry(url, options, attempt = 1) {
+  try {
+    const res = await fetch(url, options);
+    if (res.status === 429) {
+      // GoHighLevel limits are 100 req / 10s. We need to sleep longer if we hit it.
+      await sleep(2000 * attempt);
+      if (attempt < 5) return fetchWithRetry(url, options, attempt + 1);
+    }
+    return res;
+  } catch (e) {
+    if (attempt < 5) {
+      await sleep(2000);
+      return fetchWithRetry(url, options, attempt + 1);
+    }
+    throw e;
+  }
+}
+
 /**
  * Audita los mensajes de una conversación de Messenger para un contacto en GHL.
  * Identifica todos los clics de anuncios de Meta, contabiliza reingresos y genera notas de auditoría.
@@ -34,7 +52,7 @@ export async function auditAdAttribution(contactId, options = {}) {
 
   try {
     // 1. Obtener detalles del contacto
-    const contactRes = await fetch(`https://services.leadconnectorhq.com/contacts/${contactId}`, {
+    const contactRes = await fetchWithRetry(`https://services.leadconnectorhq.com/contacts/${contactId}`, {
       headers: HEADERS_CONTACTS
     });
 
@@ -49,7 +67,7 @@ export async function auditAdAttribution(contactId, options = {}) {
 
     // 2. Buscar conversaciones activas del contacto
     const convSearchUrl = `https://services.leadconnectorhq.com/conversations/search?locationId=${locationId}&contactId=${contactId}`;
-    const convRes = await fetch(convSearchUrl, { headers: HEADERS_CONV });
+    const convRes = await fetchWithRetry(convSearchUrl, { headers: HEADERS_CONV });
     const convData = await convRes.json();
 
     const conversations = convData.conversations || [];
@@ -63,7 +81,7 @@ export async function auditAdAttribution(contactId, options = {}) {
 
     for (const conv of conversations) {
       const msgUrl = `https://services.leadconnectorhq.com/conversations/${conv.id}/messages?locationId=${locationId}`;
-      const msgRes = await fetch(msgUrl, { headers: HEADERS_CONV });
+      const msgRes = await fetchWithRetry(msgUrl, { headers: HEADERS_CONV });
       const msgData = await msgRes.json();
       const messages = msgData.messages?.messages || [];
 
@@ -125,7 +143,7 @@ export async function auditAdAttribution(contactId, options = {}) {
     );
 
     if (tagsToRemove.length > 0) {
-      await fetch(`https://services.leadconnectorhq.com/contacts/${contactId}/tags`, {
+      await fetchWithRetry(`https://services.leadconnectorhq.com/contacts/${contactId}/tags`, {
         method: 'DELETE',
         headers: HEADERS_CONTACTS,
         body: JSON.stringify({ tags: tagsToRemove })
@@ -142,7 +160,7 @@ export async function auditAdAttribution(contactId, options = {}) {
     }
 
     if (newTags.length > 0) {
-      await fetch(`https://services.leadconnectorhq.com/contacts/${contactId}/tags`, {
+      await fetchWithRetry(`https://services.leadconnectorhq.com/contacts/${contactId}/tags`, {
         method: 'POST',
         headers: HEADERS_CONTACTS,
         body: JSON.stringify({ tags: newTags })
@@ -151,12 +169,20 @@ export async function auditAdAttribution(contactId, options = {}) {
     }
 
     // 5. Inyectar Nota de Auditoría Financiera en GHL (Si es reingreso)
-    if (isMultipleClick && !currentTags.includes('alerta-reingreso-pauta')) {
-      const breakdownText = adInteractions.map((inter, idx) => {
-        return `  • Clic #${idx + 1}: ${inter.date.toLocaleDateString('es-ES')} ${inter.date.toLocaleTimeString('es-ES')} | Pág: ${inter.pageName} | Anuncio: ${inter.adTitle}`;
-      }).join('\n');
+    if (isMultipleClick) {
+      const notesUrl = `https://services.leadconnectorhq.com/contacts/${contactId}/notes`;
+      const notesRes = await fetchWithRetry(notesUrl, { headers: HEADERS_CONTACTS });
+      const notesData = await notesRes.json();
+      const existingNotes = notesData.notes || [];
 
-      const noteContent = `📊 AUDITORÍA DE PAUTA & REINGRESOS (CONTROL DE AGENCIAS)
+      const alreadyNoted = existingNotes.some(n => n.body.includes(`REINGRESO MÚLTIPLE DE PAUTA (Total clics: ${totalAdClicks})`));
+
+      if (!alreadyNoted) {
+        const breakdownText = adInteractions.map((inter, idx) => {
+          return `  • Clic #${idx + 1}: ${inter.date.toLocaleDateString('es-ES')} ${inter.date.toLocaleTimeString('es-ES')} | Pág: ${inter.pageName} | Anuncio: ${inter.adTitle}`;
+        }).join('\n');
+
+        const noteContent = `📊 REINGRESO MÚLTIPLE DE PAUTA (Total clics: ${totalAdClicks})
 ==================================================
 👤 Cliente: ${fullName}
 🔢 Total de Clics de Anuncios Registrados: ${totalAdClicks}
@@ -167,13 +193,14 @@ ${breakdownText}
 
 👉 Diagnóstico: 1 Cliente Real Adquirido. No pagar comisiones duplicadas por los clics posteriores.`;
 
-      await fetch(`https://services.leadconnectorhq.com/contacts/${contactId}/notes`, {
-        method: 'POST',
-        headers: HEADERS_CONTACTS,
-        body: JSON.stringify({ body: noteContent })
-      });
+        await fetchWithRetry(notesUrl, {
+          method: 'POST',
+          headers: HEADERS_CONTACTS,
+          body: JSON.stringify({ body: noteContent })
+        });
 
-      if (!isSilent) console.log(`  📝 Nota de auditoría financiera inyectada en GHL.`);
+        if (!isSilent) console.log(`  📝 Inyectada nota de deducción financiera (x${totalAdClicks})`);
+      }
     }
 
     return {
@@ -211,9 +238,10 @@ export async function runHistoricalAdAttributionSweep() {
   console.log("📥 Extrayendo lista completa de contactos desde GHL...");
   while (url) {
     try {
-      const res = await fetch(url, { headers: HEADERS_CONTACTS });
+      console.log(`[Pauta Sweep] Consultando lote de 100 contactos...`);
+      const res = await fetchWithRetry(url, { headers: HEADERS_CONTACTS });
       if (res.status === 429) {
-        console.log("Rate limit alcanzado. Pausando 5 segundos...");
+        console.log(`[Pauta Sweep] Rate limit alcanzado. Pausando 5s...`);
         await sleep(5000);
         continue;
       }
