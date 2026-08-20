@@ -115,12 +115,26 @@ export async function auditAdAttribution(contactId, options = {}) {
     // Ordenar cronológicamente (del más antiguo al más reciente)
     adInteractions.sort((a, b) => a.date - b.date);
 
-    // Contabilizar clics únicos por timestamp aproximado / mensaje de entrada
-    const totalAdClicks = Math.max(adInteractions.length, 1);
+    // Agrupar interacciones en ventanas de 10 minutos (para ignorar el spam de clics rápidos, pero detectar reingresos reales)
+    const uniqueAdClicks = [];
+    for (const inter of adInteractions) {
+      if (uniqueAdClicks.length === 0) {
+        uniqueAdClicks.push(inter);
+      } else {
+        const lastClick = uniqueAdClicks[uniqueAdClicks.length - 1];
+        const diffMinutes = (inter.date - lastClick.date) / (1000 * 60);
+        if (diffMinutes > 10) { // Si pasaron más de 10 minutos, cuenta como un reingreso nuevo de pauta
+          uniqueAdClicks.push(inter);
+        }
+      }
+    }
+
+    // Contabilizar clics únicos basados en las sesiones agrupadas
+    const totalAdClicks = Math.max(uniqueAdClicks.length, 1);
     const isMultipleClick = totalAdClicks > 1;
     const clicksToDiscount = Math.max(0, totalAdClicks - 1);
 
-    const latestInteraction = adInteractions[adInteractions.length - 1] || {
+    const latestInteraction = uniqueAdClicks[uniqueAdClicks.length - 1] || {
       pageName: 'Desconocida',
       adTitle: 'Campaña Estándar',
       date: new Date()
@@ -159,6 +173,10 @@ export async function auditAdAttribution(contactId, options = {}) {
       newTags.push('alerta-reingreso-pauta');
     }
 
+    if (totalAdClicks >= 3 && !currentTags.includes('alerta-bloqueo-pauta')) {
+      newTags.push('alerta-bloqueo-pauta');
+    }
+
     if (newTags.length > 0) {
       await fetchWithRetry(`https://services.leadconnectorhq.com/contacts/${contactId}/tags`, {
         method: 'POST',
@@ -178,11 +196,11 @@ export async function auditAdAttribution(contactId, options = {}) {
       const alreadyNoted = existingNotes.some(n => n.body.includes(`REINGRESO MÚLTIPLE DE PAUTA (Total clics: ${totalAdClicks})`));
 
       if (!alreadyNoted) {
-        const breakdownText = adInteractions.map((inter, idx) => {
-          return `  • Clic #${idx + 1}: ${inter.date.toLocaleDateString('es-ES')} ${inter.date.toLocaleTimeString('es-ES')} | Pág: ${inter.pageName} | Anuncio: ${inter.adTitle}`;
+        const breakdownText = uniqueAdClicks.map((inter, idx) => {
+          return `  • Reingreso #${idx + 1}: ${inter.date.toLocaleDateString('es-ES')} ${inter.date.toLocaleTimeString('es-ES')} | Pág: ${inter.pageName} | Msj: ${inter.body}`;
         }).join('\n');
 
-        const noteContent = `📊 REINGRESO MÚLTIPLE DE PAUTA (Total clics: ${totalAdClicks})
+        const noteContent = `📊 REINGRESO MÚLTIPLE DE PAUTA (Total clics reales: ${totalAdClicks})
 ==================================================
 👤 Cliente: ${fullName}
 🔢 Total de Clics de Anuncios Registrados: ${totalAdClicks}
