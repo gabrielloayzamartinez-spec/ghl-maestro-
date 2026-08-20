@@ -119,6 +119,20 @@ export async function auditAdAttribution(contactId, options = {}) {
     const newTags = [];
     const targetTag = totalAdClicks === 1 ? 'pauta-clic-x1' : `pauta-reingreso-x${totalAdClicks}`;
 
+    // Detectar etiquetas viejas que deben ser borradas (ej. x2 si ahora es x3, o viceversa por corrección)
+    const tagsToRemove = currentTags.filter(t => 
+      (t.startsWith('pauta-reingreso-x') || t === 'pauta-clic-x1') && t !== targetTag
+    );
+
+    if (tagsToRemove.length > 0) {
+      await fetch(`https://services.leadconnectorhq.com/contacts/${contactId}/tags`, {
+        method: 'DELETE',
+        headers: HEADERS_CONTACTS,
+        body: JSON.stringify({ tags: tagsToRemove })
+      });
+      if (!isSilent) console.log(`  🧹 Etiquetas incorrectas borradas: ${tagsToRemove.join(', ')}`);
+    }
+
     if (!currentTags.includes(targetTag)) {
       newTags.push(targetTag);
     }
