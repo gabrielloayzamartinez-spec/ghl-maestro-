@@ -79,6 +79,7 @@ export async function auditAdAttribution(contactId, options = {}) {
     // 3. Extraer todos los mensajes de todas las conversaciones para buscar metadatos de pauta (Meta FB/IG)
     // Lógica del Cliente: "La guía es el mensaje automático que proviene de nosotros. Si se repite se cuenta como uno más."
     const automatedMessages = {};
+    const adInteractions = [];
 
     for (const conv of conversations) {
       let nextUrl = `https://services.leadconnectorhq.com/conversations/${conv.id}/messages?locationId=${locationId}&limit=100`;
